@@ -7,6 +7,15 @@ export const api = axios.create({
   baseURL,
 });
 
+api.interceptors.request.use((config) => {
+  const token = window.localStorage.getItem('meetmind-token');
+  if (token) {
+    config.headers = config.headers ?? {};
+    (config.headers as any).Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 export interface ActionItem {
   task: string;
   owner: string;
@@ -58,6 +67,10 @@ export interface MeetingDetail {
   insights: MeetingInsights;
 }
 
+export interface MeetingChatResponse {
+  answer: string;
+}
+
 export interface TelegramDialog {
   id: string;
   username?: string;
@@ -83,6 +96,13 @@ export async function fetchTelegramHistory(peerId: string, limit = 200) {
 
 export async function updateMeetingTitle(id: string, title: string) {
   const res = await api.patch<MeetingDetail>(`/meetings/${id}/title`, { title });
+  return res.data;
+}
+
+export async function chatWithMeeting(id: string, question: string) {
+  const res = await api.post<MeetingChatResponse>(`/meetings/${id}/chat`, {
+    question,
+  });
   return res.data;
 }
 

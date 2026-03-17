@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.2
 
+    dashboard_token: str | None = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

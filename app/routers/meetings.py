@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
 from app.ai.schema import MeetingInsights
+from app.ai.client import llm_client
 from app.db.base import get_db
 from app.db.models import MEETINGS_COLLECTION, INSIGHTS_COLLECTION
 
@@ -26,6 +27,14 @@ class MeetingDetail(BaseModel):
 
 class MeetingTitleUpdate(BaseModel):
     title: str
+
+
+class MeetingChatRequest(BaseModel):
+    question: str
+
+
+class MeetingChatResponse(BaseModel):
+    answer: str
 
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
@@ -129,4 +138,113 @@ async def update_meeting_title(
 
     # Reuse get_meeting logic to build the response
     return await get_meeting(meeting_id, db)
+
+
+@router.post("/{meeting_id}/chat", response_model=MeetingChatResponse)
+async def chat_with_meeting(
+    meeting_id: str,
+    payload: MeetingChatRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> MeetingChatResponse:
+    """
+    Lightweight chat endpoint that lets a user ask a free-form question
+    about a specific meeting. Uses the stored transcript + insights as context.
+    """
+    try:
+        oid = ObjectId(meeting_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found."
+        )
+
+    meeting = await db[MEETINGS_COLLECTION].find_one({"_id": oid})
+    if not meeting:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found."
+        )
+
+    insights = await db[INSIGHTS_COLLECTION].find_one({"meeting_id": meeting_id})
+    if not insights:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Insights not found for this meeting.",
+        )
+
+    transcript = meeting.get("raw_transcript", "")
+    title = meeting.get("title", "") or "Untitled meeting"
+
+    # Build a compact context string from insights to keep prompts reasonable in size.
+    summary = insights.get("summary") or ""
+    decisions = insights.get("decisions") or []
+    action_items = insights.get("action_items") or []
+
+    context_parts: List[str] = []
+    context_parts.append(f"Title: {title}")
+    if summary:
+        context_parts.append(f"Summary: {summary}")
+    if decisions:
+        context_parts.append("Decisions:")
+        for d in decisions[:10]:
+            context_parts.append(f"- {d}")
+    if action_items:
+        context_parts.append("Action items:")
+        for a in action_items[:15]:
+            task = a.get("task") or ""
+            owner = a.get("owner") or ""
+            deadline = a.get("deadline") or ""
+            extra = []
+            if owner:
+                extra.append(f"owner={owner}")
+            if deadline:
+                extra.append(f"deadline={deadline}")
+            suffix = f" ({', '.join(extra)})" if extra else ""
+            context_parts.append(f"- {task}{suffix}")
+
+    context = "\n".join(context_parts)
+
+    system_prompt = (
+        "You are an AI assistant that answers questions about a single meeting.\n"
+        "Use ONLY the provided transcript and structured insights as your source of truth.\n"
+        "If the answer is not clearly supported by the data, say you don't know instead of guessing.\n"
+        "Be concise but specific. When helpful, reference speakers or decisions explicitly.\n"
+    )
+
+    user_content = (
+        f"Meeting transcript:\n{transcript}\n\n"
+        f"Structured insights:\n{context}\n\n"
+        f"User question: {payload.question}"
+    )
+
+    try:
+        # We reuse the same client but ask for free-form text instead of JSON.
+        from app.config import settings  # imported lazily to avoid cycles
+        import httpx
+
+        headers = {
+            "Authorization": f"Bearer {settings.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": settings.groq_model,
+            "temperature": settings.llm_temperature,
+            "max_tokens": settings.llm_max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(llm_client._base_url, headers=headers, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+
+        answer = data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to chat with meeting: {exc}",
+        )
+
+    return MeetingChatResponse(answer=answer)
 

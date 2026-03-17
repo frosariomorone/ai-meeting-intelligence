@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, MeetingDetail, updateMeetingTitle } from '../api';
+import { api, MeetingDetail, updateMeetingTitle, chatWithMeeting } from '../api';
 
 export default function MeetingDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -9,6 +9,11 @@ export default function MeetingDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  const [chatInput, setChatInput] = useState('');
+  const [chatAnswer, setChatAnswer] = useState<string | null>(null);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -50,6 +55,111 @@ export default function MeetingDetailPage() {
   if (!meeting) return null;
 
   const { insights } = meeting;
+
+  function buildMarkdownExport(m: MeetingDetail): string {
+    const lines: string[] = [];
+    lines.push(`# ${m.title || 'Untitled meeting'}`);
+    lines.push('');
+    lines.push(`Date: ${new Date(m.created_at).toLocaleString()}`);
+    lines.push('');
+    lines.push('## Summary');
+    lines.push('');
+    lines.push(insights.summary || 'No summary available.');
+    lines.push('');
+    lines.push('## Key points');
+    lines.push('');
+    if (insights.key_points?.length) {
+      for (const point of insights.key_points) {
+        lines.push(`- ${point}`);
+      }
+    } else {
+      lines.push('_No key points extracted._');
+    }
+    lines.push('');
+    lines.push('## Action items');
+    lines.push('');
+    if (insights.action_items?.length) {
+      for (const a of insights.action_items) {
+        const owner = a.owner ? ` | Owner: ${a.owner}` : '';
+        const deadline = a.deadline ? ` | Deadline: ${a.deadline}` : '';
+        lines.push(`- ${a.task}${owner}${deadline}`);
+      }
+    } else {
+      lines.push('_No action items identified._');
+    }
+    lines.push('');
+    lines.push('## Decisions');
+    lines.push('');
+    if (insights.decisions?.length) {
+      for (const d of insights.decisions) {
+        lines.push(`- ${d}`);
+      }
+    } else {
+      lines.push('_No explicit decisions captured._');
+    }
+    lines.push('');
+    lines.push('## Topics');
+    lines.push('');
+    if (insights.topics?.length) {
+      for (const t of insights.topics) {
+        const range =
+          t.start || t.end ? ` (${t.start || 'start'} – ${t.end || 'end'})` : '';
+        lines.push(`- **${t.topic}**${range}: ${t.summary}`);
+      }
+    } else {
+      lines.push('_No topics detected._');
+    }
+    lines.push('');
+    lines.push('## Sentiment');
+    lines.push('');
+    lines.push(`- Overall: **${insights.sentiment?.overall || 'Unknown'}**`);
+    if (insights.sentiment?.per_speaker?.length) {
+      for (const s of insights.sentiment.per_speaker) {
+        lines.push(`- ${s.speaker}: ${s.sentiment}`);
+      }
+    }
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push('### Raw transcript');
+    lines.push('');
+    lines.push('```');
+    lines.push(m.raw_transcript || '');
+    lines.push('```');
+    return lines.join('\n');
+  }
+
+  async function handleCopyMarkdown() {
+    if (!meeting) return;
+    try {
+      const text = buildMarkdownExport(meeting);
+      await navigator.clipboard.writeText(text);
+      setExportMessage('Copied meeting as Markdown to clipboard.');
+      setTimeout(() => setExportMessage(null), 3000);
+    } catch {
+      setExportMessage('Failed to copy to clipboard.');
+      setTimeout(() => setExportMessage(null), 3000);
+    }
+  }
+
+  function handleDownloadJson() {
+    if (!meeting) return;
+    const blob = new Blob([JSON.stringify(meeting, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeTitle = (meeting.title || 'meeting')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    a.download = `${safeTitle || 'meeting'}-insights.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="space-y-4">
@@ -113,7 +223,88 @@ export default function MeetingDetailPage() {
             {new Date(meeting.created_at).toLocaleString()}
           </p>
         </div>
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleCopyMarkdown}
+              className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800"
+            >
+              Copy as Markdown
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadJson}
+              className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-700"
+            >
+              Download JSON
+            </button>
+          </div>
+          {exportMessage && (
+            <span className="text-[10px] text-emerald-300">{exportMessage}</span>
+          )}
+        </div>
       </div>
+
+      {/* Inline AI chat about this meeting */}
+      <section className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">Ask this meeting</h2>
+          <p className="text-[10px] text-slate-500">
+            Example: &quot;What did John say about pricing?&quot;
+          </p>
+        </div>
+        <form
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!id || !chatInput.trim()) return;
+            try {
+              setChatLoading(true);
+              setChatError(null);
+              const res = await chatWithMeeting(id, chatInput.trim());
+              setChatAnswer(res.answer);
+            } catch (err: any) {
+              console.error('Chat failed', err);
+              const msg =
+                err?.response?.data?.detail ??
+                err?.message ??
+                'Failed to ask question.';
+              setChatError(String(msg));
+            } finally {
+              setChatLoading(false);
+            }
+          }}
+        >
+          <input
+            type="text"
+            placeholder='Ask a question about this meeting...'
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            className="flex-1 rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+          />
+          <button
+            type="submit"
+            disabled={chatLoading || !chatInput.trim()}
+            className="mt-2 sm:mt-0 inline-flex items-center justify-center gap-2 rounded-md bg-brand-600 px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+          >
+            {chatLoading && (
+              <span className="h-3 w-3 animate-spin rounded-full border border-slate-200 border-t-transparent" />
+            )}
+            <span>{chatLoading ? 'Thinking…' : 'Ask'}</span>
+          </button>
+        </form>
+        {chatError && (
+          <p className="text-xs text-red-400 bg-red-950/40 border border-red-900 rounded-md px-2 py-1">
+            {chatError}
+          </p>
+        )}
+        {chatAnswer && !chatError && (
+          <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-200 whitespace-pre-wrap">
+            {chatAnswer}
+          </div>
+        )}
+      </section>
 
       {/* Summary */}
       <section className="rounded-lg border border-slate-800 bg-slate-900/60 p-4 space-y-2">

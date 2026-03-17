@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.auth import require_dashboard_token
 from app.routers import analyze, meetings, search, telegram
 
 
@@ -21,10 +22,12 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(analyze.router)
-    app.include_router(meetings.router)
-    app.include_router(search.router)
-    app.include_router(telegram.router)
+    dependency = Depends(require_dashboard_token)
+
+    app.include_router(analyze.router, dependencies=[dependency])
+    app.include_router(meetings.router, dependencies=[dependency])
+    app.include_router(search.router, dependencies=[dependency])
+    app.include_router(telegram.router, dependencies=[dependency])
 
     return app
 

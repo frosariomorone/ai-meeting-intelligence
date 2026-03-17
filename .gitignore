@@ -1,0 +1,50 @@
+# Python / backend
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.log
+
+# Environment / secrets
+.env
+.env.local
+*.env.*
+
+# Telethon session
+telegram.session
+*.session-journal
+
+# Byte-compiled / cache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# FastAPI / Uvicorn
+*.sqlite3
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Docker
+*.pid
+
+# Mongo data volume (if ever mapped to local)
+mongo_data/
+

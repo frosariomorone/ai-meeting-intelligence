@@ -1,0 +1,48 @@
+version: '3.9'
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: meetmind-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meetmind-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override for compose: talk to the mongo service instead of localhost
+      - MONGODB_URL=mongodb://mongo:27017
+    depends_on:
+      - mongo
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./telegram.session:/app/telegram.session
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Use localhost because the React app runs in the user's browser,
+        # not inside the Docker network.
+        - VITE_API_URL=http://localhost:8000
+    container_name: meetmind-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  mongo_data:
+

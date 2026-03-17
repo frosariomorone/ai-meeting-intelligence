@@ -1,5 +1,7 @@
 # MeetMind AI – Meeting Intelligence System
 
+![Main dashboard](docs/main-dashboard.png)
+
 MeetMind AI turns raw meeting transcripts and Telegram chats into structured, searchable knowledge for remote teams, founders, PMs, sales, and agencies.
 
 This repository contains:
